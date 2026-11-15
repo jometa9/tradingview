@@ -1,0 +1,59 @@
+//@version=5
+indicator("移動平均 高値安値レンジ", "移動平均レンジ", overlay=true)
+
+// Inputs
+len_1 = input.int(30, "移動平均 1 期間", minval=1)
+len_2 = input.int(50, "移動平均 2 期間", minval=1)
+len_3 = input.int(100, "移動平均 3 期間", minval=1)
+src = input.source(close, "ソース")
+upper_color = input.color(color.new(#ffffff, 0), "上ラインの色")
+lower_color = input.color(color.new(#ffffff, 0), "下ラインの色")
+line_width = input.int(1, "ラインの太さ", minval=1, maxval=5)
+show_fill = input.bool(true, "ライン間を塗りつぶす")
+fill_color = input.color(color.new(color.gray, 85), "塗りつぶしの色")
+show_watermark = input.bool(false, "ウォーターマークを表示", group="ウォーターマーク")
+watermark_text = input.string("My Watermark", "テキスト", group="ウォーターマーク")
+watermark_pos = input.string("中央", "位置", options=["左上", "上中央", "右上", "左中央", "中央", "右中央", "左下", "下中央", "右下"], group="ウォーターマーク")
+watermark_size = input.string("大", "サイズ", options=["極小", "小", "標準", "大", "特大"], group="ウォーターマーク")
+watermark_color = input.color(color.new(#ffffff, 80), "色", group="ウォーターマーク")
+
+// The three SMAs are only computed, never drawn
+sma_1 = ta.sma(src, len_1)
+sma_2 = ta.sma(src, len_2)
+sma_3 = ta.sma(src, len_3)
+
+// On every bar take the highest and lowest of the three, so even when the
+// SMAs cross each other the output is always two clean lines: top and bottom
+upper = math.max(sma_1, sma_2, sma_3)
+lower = math.min(sma_1, sma_2, sma_3)
+
+upper_plot = plot(upper, "上ライン", color=upper_color, linewidth=line_width)
+lower_plot = plot(lower, "下ライン", color=lower_color, linewidth=line_width)
+fill(upper_plot, lower_plot, color=show_fill ? fill_color : na, title="塗りつぶし")
+
+// Single alert, either side: fires when the bar touches the range after the
+// previous bar was fully outside it (from above, from below, or crossing through)
+in_range = low <= upper and high >= lower
+entered_range = in_range and not in_range[1]
+alertcondition(entered_range, "レンジ進入", "{{ticker}}: 価格が移動平均レンジに入りました ({{close}})")
+
+// Custom watermark, drawn as a single-cell table so it stays fixed on screen
+pos_value = switch watermark_pos
+    "左上" => position.top_left
+    "上中央" => position.top_center
+    "右上" => position.top_right
+    "左中央" => position.middle_left
+    "右中央" => position.middle_right
+    "左下" => position.bottom_left
+    "下中央" => position.bottom_center
+    "右下" => position.bottom_right
+    => position.middle_center
+size_value = switch watermark_size
+    "極小" => size.tiny
+    "小" => size.small
+    "標準" => size.normal
+    "特大" => size.huge
+    => size.large
+var table watermark = table.new(pos_value, 1, 1)
+if barstate.islast and show_watermark
+    table.cell(watermark, 0, 0, watermark_text, text_color=watermark_color, text_size=size_value)
