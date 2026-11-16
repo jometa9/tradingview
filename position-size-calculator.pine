@@ -2,28 +2,58 @@
 indicator("Position Size Calculator", overlay = true)
 
 // ── Inputs ──────────────────────────────────────────────
-riskDollars = input.float(200.0, "Risk per trade ($)", minval = 1, step = 10)
-riskBuffer  = input.float(25.0,  "Allowed overage ($)", minval = 0, step = 5, tooltip = "How far past your risk you're willing to go before dropping a contract. E.g. risk 200 + overage 25: keeps the extra contract as long as total risk stays under 225.")
-stopMode    = input.string("Price line", "Stop input mode", options = ["Price line", "Manual points"], tooltip = "Price line: click the chart to place your stop, then drag the line to move it. Manual: type the stop distance below.")
-stopPrice   = input.price(0.0, "Stop price (click chart)", confirm = true)
-entryPrice  = input.price(0.0, "Entry price (click chart)", confirm = true)
-stopPtsMan  = input.float(25.0, "Stop loss (points, manual mode)", minval = 0.01, step = 0.25)
-sizeIn      = input.string("Micros (MNQ/MES)", "Size contracts in", options = ["This chart's contract", "Micros (MNQ/MES)"], tooltip = "Micros = 1/10 the value of the full-size contract. Lets you chart NQ but size in MNQ.")
-tablePos    = input.string("Top Right", "Table position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"])
+instrMode    = input.string("Futures", "Instrument type", options = ["Futures", "Forex / Metals"], tooltip = "Futures: sizes in contracts (NQ, ES, MNQ, MES...). Forex / Metals: sizes in lots (EURUSD, USDJPY, XAUUSD...).")
+riskDollars  = input.float(200.0, "Risk per trade ($ / account currency)", minval = 1, step = 10)
+riskBuffer   = input.float(25.0,  "Allowed overage ($)", minval = 0, step = 5, tooltip = "How far past your risk you're willing to go before dropping a unit. E.g. risk 200 + overage 25: keeps the extra contract/lot as long as total risk stays under 225. Set 0 to never go over.")
+maxContracts = input.int(10, "Max contracts (futures cap)", minval = 1, tooltip = "Futures result never goes above this number.")
+maxLots      = input.float(5.0, "Max lots (forex/metals cap)", minval = 0.01, step = 0.01, tooltip = "Forex/metals result never goes above this number of lots.")
+stopMode     = input.string("Price line", "Stop input mode", options = ["Price line", "Manual distance"], tooltip = "Price line: set entry and stop prices from the chart. Manual distance: type the stop distance below.")
+stopPrice    = input.price(0.0, "Stop price (click chart)", confirm = true)
+entryPrice   = input.price(0.0, "Entry price (click chart)", confirm = true)
+stopPtsMan   = input.float(25.0, "Futures: stop (points, manual mode)", minval = 0.01, step = 0.25)
+stopDistFx   = input.float(0.0020, "Forex/Metals: stop (price distance, manual mode)", minval = 0.00001, step = 0.0001, tooltip = "Distance in PRICE units. EURUSD: 0.0020 = 20 pips. USDJPY: 0.20 = 20 pips. XAUUSD: 5.0 = $5 move.")
+sizeIn       = input.string("Micro version (MNQ/MES)", "Futures: size contracts in", options = ["This chart's contract", "Micro version (MNQ/MES)"], tooltip = "Micro version only converts when the chart is a full-size contract (NQ, ES, YM, RTY, CL, GC). If the chart is already a micro (MNQ, MES...), nothing is converted.")
+fxContract   = input.float(100000.0, "Forex/Metals: units per 1.00 lot", minval = 1, tooltip = "Forex standard lot: 100000. Gold (XAUUSD): usually 100 oz. Silver (XAGUSD): usually 5000 oz. CHECK YOUR BROKER, it varies.")
+lotStep      = input.float(0.01, "Forex/Metals: lot step", minval = 0.001, step = 0.01, tooltip = "Smallest lot increment your broker accepts (usually 0.01).")
+acctCcy      = input.string("USD", "Forex/Metals: account currency", options = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF"], tooltip = "Risk is converted from the pair's quote currency to this currency.")
+tablePos     = input.string("Top Right", "Table position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"])
 
 // ── Calculation ─────────────────────────────────────────
-// syminfo.pointvalue = $ per 1 point per contract (auto-detects: NQ=$20, MNQ=$2, ES=$50, MES=$5, etc.)
-useLine      = stopMode == "Price line" and stopPrice > 0
-hasEntry     = entryPrice > 0
-entryLevel   = entryPrice
-stopPoints   = useLine and hasEntry ? math.abs(entryLevel - stopPrice) : stopPtsMan
-useMicros    = sizeIn == "Micros (MNQ/MES)"
-pointValue   = useMicros ? syminfo.pointvalue / 10 : syminfo.pointvalue
-riskPerCtr   = stopPoints * pointValue
-contracts    = riskPerCtr > 0 ? math.floor((riskDollars + riskBuffer) / riskPerCtr) : 0
-actualRisk   = contracts * riskPerCtr
-overBudget   = actualRisk > riskDollars
-ctrLabel     = useMicros ? "MICRO CONTRACTS" : "CONTRACTS"
+isFx = instrMode == "Forex / Metals"
+
+// Futures: syminfo.pointvalue = $ per 1 point per contract of the CHART's contract
+fullRoots  = array.from("NQ", "ES", "YM", "RTY", "CL", "GC")
+microRoots = array.from("MNQ", "MES", "MYM", "M2K", "MCL", "MGC")
+rootIdx    = array.indexof(fullRoots, syminfo.root)
+convert    = sizeIn == "Micro version (MNQ/MES)" and rootIdx >= 0 and not isFx   // only full-size charts get divided by 10
+sizedName  = convert ? array.get(microRoots, rootIdx) : syminfo.root
+pointValue = convert ? syminfo.pointvalue / 10 : syminfo.pointvalue
+
+// Forex / Metals: value of a 1.0 price move per lot, converted from quote currency to account currency
+fxRate   = request.currency_rate(syminfo.currency, acctCcy)
+fxRateOk = not na(fxRate)
+
+// $ per 1.0 price move per 1 unit of size (1 contract or 1 lot)
+unitValue = isFx ? (fxRateOk ? fxContract * fxRate : 0.0) : pointValue
+
+useLine    = stopMode == "Price line" and stopPrice > 0
+hasEntry   = entryPrice > 0
+entryLevel = entryPrice
+stopDist   = useLine and hasEntry ? math.abs(entryLevel - stopPrice) : (isFx ? stopDistFx : stopPtsMan)
+
+riskPerUnit = stopDist * unitValue
+step        = isFx ? lotStep : 1.0
+budget      = riskDollars + riskBuffer
+rawSize     = riskPerUnit > 0 ? math.floor(budget / riskPerUnit / step + 0.000001) * step : 0.0
+capSize     = isFx ? maxLots : float(maxContracts)
+size        = math.min(rawSize, capSize)
+actualRisk  = size * riskPerUnit
+capped      = rawSize > capSize
+
+cur      = isFx ? acctCcy + " " : "$"
+sizeTxt  = isFx ? str.tostring(size, "0.00") : str.tostring(math.round(size))
+unitName = isFx ? " lots" : " " + sizedName
+ctrLabel = isFx ? "LOTS" : sizedName + " CONTRACTS"
 
 // ── Table ───────────────────────────────────────────────
 getPos(p) =>
@@ -42,34 +72,35 @@ if barstate.islast and useLine
     line.delete(entryLn)
     label.delete(entryLbl)
     stopLn   := line.new(bar_index - 20, stopPrice, bar_index + 10, stopPrice, color = color.red, width = 2, style = line.style_dashed)
-    stopLbl  := label.new(bar_index + 10, stopPrice, "STOP  " + str.tostring(stopPoints, "#.##") + " pts  →  " + str.tostring(contracts) + (useMicros ? " micros" : " contracts"), style = label.style_label_left, color = color.new(color.red, 20), textcolor = color.white, size = size.normal)
+    stopLbl  := label.new(bar_index + 10, stopPrice, "STOP  " + str.tostring(stopDist, format.mintick) + "  →  " + sizeTxt + unitName, style = label.style_label_left, color = color.new(color.red, 20), textcolor = color.white, size = size.normal)
     if hasEntry
         entryLn  := line.new(bar_index - 20, entryLevel, bar_index + 10, entryLevel, color = color.blue, width = 2, style = line.style_dashed)
         entryLbl := label.new(bar_index + 10, entryLevel, "ENTRY", style = label.style_label_left, color = color.new(color.blue, 20), textcolor = color.white, size = size.small)
 
 if barstate.islast
-    okColor  = contracts > 0 ? color.new(#006600, 0) : color.new(color.red, 0)
+    okColor  = size > 0 ? color.new(#006600, 0) : color.new(color.red, 0)
     bgHead   = color.new(color.aqua, 25)
     bgCell   = color.new(color.silver, 25)
     txt      = color.black
+    sizeNote = isFx and not fxRateOk ? " (no FX rate)" : size == 0 ? " (stop too wide)" : capped ? " (capped)" : ""
 
     table.cell(t, 0, 0, "POSITION SIZE", text_color = txt, bgcolor = bgHead, text_size = size.normal)
-    table.cell(t, 1, 0, syminfo.ticker + (useMicros ? " → micros" : ""), text_color = txt, bgcolor = bgHead, text_size = size.normal)
+    table.cell(t, 1, 0, isFx ? syminfo.ticker : sizedName, text_color = txt, bgcolor = bgHead, text_size = size.normal)
 
     table.cell(t, 0, 1, "Risk",           text_color = txt, bgcolor = bgCell, text_size = size.normal)
-    table.cell(t, 1, 1, "$" + str.tostring(riskDollars, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 1, 1, cur + str.tostring(riskDollars, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
 
     table.cell(t, 0, 2, "Stop",           text_color = txt, bgcolor = bgCell, text_size = size.normal)
-    table.cell(t, 1, 2, str.tostring(stopPoints, "#.##") + " pts", text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 1, 2, str.tostring(stopDist, format.mintick) + (isFx ? "" : " pts"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
 
-    table.cell(t, 0, 3, "$/pt/contract",  text_color = txt, bgcolor = bgCell, text_size = size.normal)
-    table.cell(t, 1, 3, "$" + str.tostring(pointValue, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 0, 3, isFx ? "Units / lot" : "$/pt/contract", text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 1, 3, isFx ? str.tostring(fxContract, "#") : "$" + str.tostring(pointValue, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
 
-    table.cell(t, 0, 4, "Risk / contract", text_color = txt, bgcolor = bgCell, text_size = size.normal)
-    table.cell(t, 1, 4, "$" + str.tostring(riskPerCtr, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 0, 4, isFx ? "Risk / lot" : "Risk / contract", text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 1, 4, cur + str.tostring(riskPerUnit, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
 
     table.cell(t, 0, 5, ctrLabel,         text_color = txt, bgcolor = bgHead, text_size = size.large)
-    table.cell(t, 1, 5, str.tostring(contracts) + (contracts == 0 ? " (stop too wide)" : ""), text_color = okColor, bgcolor = bgHead, text_size = size.large)
+    table.cell(t, 1, 5, sizeTxt + sizeNote, text_color = okColor, bgcolor = bgHead, text_size = size.large)
 
     table.cell(t, 0, 6, "Actual risk",    text_color = txt, bgcolor = bgCell, text_size = size.normal)
-    table.cell(t, 1, 6, "$" + str.tostring(actualRisk, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
+    table.cell(t, 1, 6, cur + str.tostring(actualRisk, "#.##"), text_color = txt, bgcolor = bgCell, text_size = size.normal)
